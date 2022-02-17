@@ -1251,11 +1251,11 @@ class DCGAN(object):
 
         self.d_vars = []
         for i in range(self.batch_teachers):
-            self.d_vars.append([var for var in t_vars if 'teacher%d' % i in var.name])
-        self.g_vars = [var for var in t_vars if 'g_' in var.name]
+            self.d_vars.append([var for var in self.save_vars if 'teacher%d' % i in var.name])
+        self.g_vars = [var for var in self.save_vars if 'g_' in var.name]
 
-        self.g_save_vars = [var for var in t_vars if 'g_' in var.name]
-        self.d_save_vars = [var for var in t_vars if 'd_' in var.name]
+        self.g_save_vars = [var for var in self.save_vars if 'g_' in var.name]
+        self.d_save_vars = [var for var in self.save_vars if 'd_' in var.name]
         # print(self.d_save_vars)
         print(self.save_vars)
         # self.d_save_vars = {'k': v for k, v in zip(self.d_save_vars, self.d_save_vars)}
@@ -1281,378 +1281,59 @@ class DCGAN(object):
         else:
             print(str(len(self.train_data_list)))
 
-        configs = {
-            'sigma': config.sigma,
-            'sigma_thresh': config.sigma_thresh,
-            'pca': self.pca,
-            'pca_sigma': config.pca_sigma,
-            'step_size': config.step_size,
-            'batch_teachers': self.batch_teachers,
-            'g_step': config.g_step,
-            'pca_dim': self.pca_dim,
-        }
+        self.create_directories()
+        self.store_configs()
+        self.handle_if_pca(config)
 
-        if not os.path.exists(self.checkpoint_dir):
-            os.makedirs(self.checkpoint_dir)
+        d_optim_list = self.initialize_d_optim_list(config)
+        g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1).minimize(self.g_loss, var_list=self.g_vars)
 
-        if not os.path.exists(self.teacher_dir):
-            os.makedirs(self.teacher_dir)
+        self.handle_if_not_pretrain(config)
 
-        with open(os.path.join(self.checkpoint_dir, 'configs.json'), 'w') as fp:
-            json.dump(configs, fp)
-
-        if self.pca:
-            data = self.data_X.reshape([self.data_X.shape[0], -1])
-            self.pca_components, rdp_budget = ComputeDPPrincipalProjection(
-                data,
-                self.pca_dim,
-                self.orders,
-                config.pca_sigma,
-            )
-            self.rdp_counter += rdp_budget
-
-        d_optim_list = []
-
-        for i in range(self.batch_teachers):
-            d_optim_list.append(tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1).minimize(
-                self.teachers_list[i]['d_loss'], var_list=self.d_vars[i]))
-
-        g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1).minimize(self.g_loss,
-                                                                                            var_list=self.g_vars)
-
-        if not config.pretrain:
-            try:
-                tf.global_variables_initializer().run()
-            except:
-                tf.initialize_all_variables().run()
-        else:
-            try:
-                tf.global_variables_initializer().run()
-            except:
-                tf.initialize_all_variables().run()
-            self.load_pretrain(config.checkpoint_dir)
-            # data = self.gen_data(5000)
-            # output_dir = os.path.join(self.checkpoint_dir, self.sample_dir)
-            # if not os.path.exists(output_dir):
-            #     os.makedirs(output_dir)
-            # filename = 'private.data_epoch_' + str(-1) + '.pkl'
-            # outfile = os.path.join(output_dir, filename)
-            # mkdir(output_dir)
-            # with open(outfile, 'wb') as f:
-            #     pickle.dump(data, f)
-            # current_scope = tf.contrib.framework.get_name_scope()
-            # with tf.variable_scope(current_scope, reuse=True):
-            #     biases = tf.get_variable("teacher0/d_h0_conv/biases")
-            #     biases = tf.Print(biases, [biases])
-            #     self.sess.run(biases)
-
-        if 'slt' in self.dataset_name:
-            self.g_sum = merge_summary([self.z_sum, self.G_sum, self.g_loss_sum])
-        else:
-            self.g_sum = merge_summary([self.z_sum, self.g_loss_sum])
-
-        self.d_sum_list = []
-
-        for i in range(self.batch_teachers):
-            teacher = self.teachers_list[i]
-            if 'slt' in self.dataset_name:
-                self.d_sum_list.append(
-                    merge_summary([teacher['d_loss_sum'], teacher['g_loss_sum'], teacher['img_grads_sum']]))
-            else:
-                self.d_sum_list.append(merge_summary([teacher['d_loss_sum'], teacher['g_loss_sum']]))
+        self.initialize_g_sum()
+        self.d_sum_list = self.initialize_d_sum_list()
 
         self.writer = SummaryWriter(os.path.join(self.checkpoint_dir, "logs"), self.sess.graph)
 
-        sample_z = np.random.uniform(-1, 1, size=(self.sample_num, self.z_dim))
-
         counter = 0
         start_time = time.time()
-
         self.save_d(self.teacher_dir, 0, -1)
+        eps_global = 0
         for epoch in xrange(config.epoch):
             self.epoch_change = True
             self.epoch = epoch
-            print("----------------epoch: %d --------------------" % epoch)
-            print("-------------------train-teachers----------------")
+            print("----------------start epoch: %d --------------------" % (epoch + 1))
+
             batch_idxs = int(min(self.train_size, config.train_size) // self.batch_size)
-            # The idex of each batch
             print("Train %d idxs" % batch_idxs)
             for idx in xrange(0, batch_idxs):
-
+                print(f"-------------------train-teachers {idx}----------------")
                 batch_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
 
                 errD = 0
                 # train teacher models in batches, teachers_batch: how many batches of teacher
                 for batch_num in range(self.teachers_batch):
-                    if self.teachers_batch > 1:
-                        could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch,
-                                                                     batch_num=batch_num)
-                        if could_load:
-                            counter = checkpoint_counter
-                            print("load sucess_this_epoch")
-                        else:
-                            print('fail_1')
-                            could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch - 1,
-                                                                         batch_num=batch_num)
-                            if could_load:
-                                counter = checkpoint_counter
-                                print("load sucess_previous_epoch")
-                            else:
-                                print('fail_2')
-                                could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=0,
-                                                                             batch_num=-1)
-
-                    # train each teacher in this batch, batch_teachers: how many teacher in a batch
+                    counter = self.load_batch(batch_num, epoch)
                     for teacher_id in range(self.batch_teachers):
-                        # print("Training teacher model %d" % teacher_id)
-                        # data_X = self.data_X if config.non_private else self.train_data_list[teacher_id+batch_num*self.batch_teachers]
-                        data_X = self.train_data_list[teacher_id + batch_num * self.batch_teachers]
-
-                        batch_idx = range(idx * self.batch_size, (idx + 1) * self.batch_size)
-                        batch_images = data_X[batch_idx]
-
-                        for k in range(config.d_step if epoch > 0 or config.pretrain_teacher == 0 else config.pretrain_teacher):
-                            if self.y is not None:
-                                # data_y = self.data_y if config.non_private else self.train_label_list[teacher_id+batch_num*self.batch_teachers]
-                                data_y = self.train_label_list[teacher_id + batch_num * self.batch_teachers]
-                                # print(data_y.shape)
-                                batch_labels = data_y[batch_idx]
-
-                                _, summary_str = self.sess.run([d_optim_list[teacher_id], self.d_sum_list[teacher_id]],
-                                                               feed_dict={
-                                                                   self.inputs: batch_images,
-                                                                   self.z: batch_z,
-                                                                   self.y: batch_labels,
-                                                               })
-
-                                self.writer.add_summary(summary_str, epoch)
-
-                                err = self.teachers_list[teacher_id]['d_loss'].eval({
-                                    self.z: batch_z,
-                                    self.inputs: batch_images,
-                                    self.y: batch_labels,
-                                })
-                                # print(str(batch_num*self.batch_teachers + teacher_id) + "loss:"+str(err))
-                                errD += err
-                            else:
-                                _, summary_str = self.sess.run([d_optim_list[teacher_id], self.d_sum_list[teacher_id]],
-                                                               feed_dict={
-                                                                   self.inputs: batch_images,
-                                                                   self.z: batch_z,
-                                                               })
-
-                                self.writer.add_summary(summary_str, epoch)
-
-                                err = self.teachers_list[teacher_id]['d_loss'].eval({
-                                    self.z: batch_z,
-                                    self.inputs: batch_images,
-                                })
-                                # print(str(batch_num * self.batch_teachers + teacher_id) + "d_loss:" + str(err))
-                                errD += err
-
+                        errD += self.train_teacher_x(config, epoch, batch_z, d_optim_list, teacher_id, batch_num, idx, errD)
                     self.save_d(self.teacher_dir, epoch, batch_num)
 
-                # print("------------------train-generator-------------------")
-                for k in range(config.g_step):
-                    errG = 0
-                    img_grads_list = []
-                    if self.y is not None:
-                        batch_labels = self.get_random_labels(self.batch_size)
-                        for batch_num in range(self.teachers_batch):
-                            if self.teachers_batch > 1:
-                                could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch,
-                                                                             batch_num=batch_num)
-                                if could_load:
-                                    counter = checkpoint_counter
-                                    print("load sucess")
-                                else:
-                                    print('fail')
-
-                            for teacher_id in range(self.batch_teachers):
-                                img_grads = self.sess.run(self.teachers_list[teacher_id]['img_grads'],
-                                                          feed_dict={
-                                                              self.z: batch_z,
-                                                              self.y: batch_labels,
-                                                          })
-                                img_grads_list.append(img_grads)
-
-                        old_img = self.sess.run(self.G, feed_dict={self.z: batch_z, self.y: batch_labels})
-
-                    else:
-                        for batch_num in range(self.teachers_batch):
-                            if self.teachers_batch > 1:
-                                could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch,
-                                                                             batch_num=batch_num)
-                                if could_load:
-                                    counter = checkpoint_counter
-                                    print("load sucess")
-                                else:
-                                    print('fail')
-
-                            for teacher_id in range(self.batch_teachers):
-                                img_grads = self.sess.run(self.teachers_list[teacher_id]['img_grads'],
-                                                          feed_dict={
-                                                              self.z: batch_z,
-                                                          })
-                                img_grads_list.append(img_grads)
-
-                        old_img = self.sess.run(self.G, feed_dict={self.z: batch_z})
-
-                    img_grads_agg_list = []
-                    for j in range(self.batch_size):
-                        thresh = self.thresh
-
-                        if config.non_private:
-                            img_grads_agg_tmp = self.non_private_aggregation([grads[j] for grads in img_grads_list],
-                                                                             config)
-                            rdp_budget = 0
-                        elif config.increasing_dim:
-                            img_grads_agg_tmp, rdp_budget = self.aggregate_results(
-                                [grads[j] for grads in img_grads_list], config, thresh=thresh, epoch=epoch)
-                        elif config.signsgd_dept:
-                            img_grads_agg_tmp, rdp_budget, rdp_budget_dept = self.aggregate_results(
-                                [grads[j] for grads in img_grads_list], config, thresh=thresh)
-                            self.rdp_counter_dept += rdp_budget_dept
-                        else:
-                            img_grads_agg_tmp, rdp_budget = self.aggregate_results(
-                                [grads[j] for grads in img_grads_list], config, thresh=thresh)
-
-                        img_grads_agg_list.append(img_grads_agg_tmp)
-                        self.rdp_counter += rdp_budget
-
-                    img_grads_agg = np.asarray(img_grads_agg_list)
-                    updated_img = old_img + img_grads_agg
-
-                    if config.non_private:
-                        eps = 0
-                        order = 0
-                    else:
-                        # calculate privacy budget and break if exceeds threshold
-                        eps, order = compute_eps_from_delta(self.orders, self.rdp_counter, self.dp_delta)
-                        if config.signsgd_dept:
-                            eps_dept, order_dept = compute_eps_from_delta(self.orders, self.rdp_counter_dept, self.dp_delta)
-
-                        if eps > config.max_eps:
-                            print("New budget (eps = %.2f) exceeds threshold of %.2f. Early break (eps = %.2f)." % (
-                                eps, config.max_eps, self.dp_eps_list[-1]))
-
-                            # save privacy budget
-                            self.save(config.checkpoint_dir, counter)
-                            np.savetxt(self.checkpoint_dir + "/dp_eps.txt", np.asarray(self.dp_eps_list), delimiter=",")
-                            np.savetxt(self.checkpoint_dir + "/rdp_eps.txt", np.asarray(self.rdp_eps_list),
-                                       delimiter=",")
-                            np.savetxt(self.checkpoint_dir + "/rdp_order.txt", np.asarray(self.rdp_order_list),
-                                       delimiter=",")
-                            if config.signsgd_dept:
-                                np.savetxt(self.checkpoint_dir + "/dept_dp_eps.txt", np.asarray(self.dp_eps_list_dept),
-                                           delimiter=",")
-                                np.savetxt(self.checkpoint_dir + "/dept_rdp_eps.txt", np.asarray(self.rdp_eps_list_dept),
-                                           delimiter=",")
-                                np.savetxt(self.checkpoint_dir + "/dept_rdp_order.txt", np.asarray(self.rdp_order_list_dept),
-                                           delimiter=",")
-
-                            gen_batch = 100000 // self.batch_size + 1
-                            data = self.gen_data(gen_batch)
-                            data = data[:100000]
-                            import joblib
-                            interval = 100000 // 10
-                            for slice in range(10):
-                                joblib.dump(data[slice * interval: (slice+1) * interval], self.checkpoint_dir + '/eps-%.2f.data' % self.dp_eps_list[-1] + f'-{slice}.pkl')
-                            sys.exit()
-
-                    self.dp_eps_list.append(eps)
-                    self.rdp_order_list.append(order)
-                    self.rdp_eps_list.append(self.rdp_counter)
-                    if config.signsgd_dept:
-                        self.dp_eps_list_dept.append(eps_dept)
-                        self.rdp_order_list_dept.append(order_dept)
-                        self.rdp_eps_list_dept.append(self.rdp_counter_dept)
-
-                    # Update G network
-                    if self.y is not None:
-                        _, summary_str, errG2 = self.sess.run([g_optim, self.g_sum, self.g_loss],
-                                                              feed_dict={
-                                                                  self.z: batch_z,
-                                                                  self.updated_img: updated_img,
-                                                                  self.y: batch_labels,
-                                                              })
-                        self.writer.add_summary(summary_str, epoch)
-
-                        errG = self.g_loss.eval({
-                            self.z: batch_z,
-                            self.updated_img: updated_img,
-                            self.y: batch_labels,
-                        })
-                    else:
-                        _, summary_str = self.sess.run([g_optim, self.g_sum],
-                                                       feed_dict={
-                                                           self.z: batch_z,
-                                                           self.updated_img: updated_img,
-                                                       })
-                        self.writer.add_summary(summary_str, epoch)
-
-                        errG = self.g_loss.eval({
-                            self.z: batch_z,
-                            self.updated_img: updated_img,
-                        })
-
+                print(f"------------------train-generator {idx}-------------------")
+                errG, eps, order, errG2 = self.train_generator(config, epoch, batch_z, g_optim, counter)
+                eps_global = eps
                 counter += 1
-                print(
-                    "Epoch: [%2d/%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, g_loss_before: %.8f, dp_eps: %.8f, rdp_order: %d" \
-                    % (epoch, config.epoch, idx, batch_idxs, time.time() - start_time, errD, errG, errG2, eps, order))
-            # filename = 'epoch'+str(epoch)+'_errD'+str(errD)+'_errG'+str(errG)+'_teachers'+str(self.batch_teachers)+'f.csv'
-            # if epoch % 4 == 0:
-            print('----------------------generate sample----------------------')
-            # data = self.gen_data(500)
-            # output_dir = os.path.join(self.checkpoint_dir, self.sample_dir)
-            # if not os.path.exists(output_dir):
-            #     os.makedirs(output_dir)
-            # filename = 'private.data_epoch_' + str(epoch) + '.pkl'
-            # outfile = os.path.join(output_dir, filename)
-            # mkdir(output_dir)
-            # with open(outfile,'wb') as f:
-            #     pickle.dump(data, f)
-
-            filename = 'epoch' + str(epoch) + '_errD' + str(errD) + '_errG' + str(errG) + '_teachers' + str(
-                self.batch_teachers) + 'f.csv'
-
-            # save each epoch
-            self.save(config.checkpoint_dir, counter)
-            np.savetxt(self.checkpoint_dir + "/dp_eps.txt", np.asarray(self.dp_eps_list), delimiter=",")
-            np.savetxt(self.checkpoint_dir + "/rdp_order.txt", np.asarray(self.rdp_order_list), delimiter=",")
-            np.savetxt(self.checkpoint_dir + "/rdp_eps.txt", np.asarray(self.rdp_eps_list), delimiter=",")
-            if config.signsgd_dept:
-                np.savetxt(self.checkpoint_dir + "/dept_dp_eps.txt", np.asarray(self.dp_eps_list_dept),
-                           delimiter=",")
-                np.savetxt(self.checkpoint_dir + "/dept_rdp_eps.txt", np.asarray(self.rdp_eps_list_dept),
-                           delimiter=",")
-                np.savetxt(self.checkpoint_dir + "/dept_rdp_order.txt", np.asarray(self.rdp_order_list_dept),
-                           delimiter=",")
-
-            if config.save_epoch:
-                floor_eps = math.floor(eps * 10) / 10.0
-                if not self.save_dict[floor_eps]:
-                    # get a checkpoint of low eps
-                    self.save_dict[floor_eps] = True
-                    from shutil import copytree
-                    src_dir = os.path.join(config.checkpoint_dir, self.model_dir)
-                    dst_dir = os.path.join(config.checkpoint_dir, str(floor_eps))
-                    copytree(src_dir, dst_dir)
-
-        #
-        # save after training
-        self.save(config.checkpoint_dir, counter)
-        np.savetxt(self.checkpoint_dir + "/dp_eps.txt", np.asarray(self.dp_eps_list), delimiter=",")
-        np.savetxt(self.checkpoint_dir + "/rdp_eps.txt", np.asarray(self.rdp_eps_list), delimiter=",")
-        np.savetxt(self.checkpoint_dir + "/rdp_order.txt", np.asarray(self.rdp_order_list), delimiter=",")
-        if config.signsgd_dept:
-            np.savetxt(self.checkpoint_dir + "/dept_dp_eps.txt", np.asarray(self.dp_eps_list_dept),
-                       delimiter=",")
-            np.savetxt(self.checkpoint_dir + "/dept_rdp_eps.txt", np.asarray(self.rdp_eps_list_dept),
-                       delimiter=",")
-            np.savetxt(self.checkpoint_dir + "/dept_rdp_order.txt", np.asarray(self.rdp_order_list_dept),
-                       delimiter=",")
-
+                print("Epoch: [%2d/%2d] "
+                      "Batch: [%4d/%4d] "
+                      "time: %4.4f, "
+                      "d_loss: %.8f, "
+                      "g_loss: %.8f, "
+                      "g_loss_before: %.8f, "
+                      "dp_eps: %.8f, "
+                      "rdp_order: %d" \
+                    % (epoch + 1, config.epoch, idx + 1, batch_idxs, time.time() - start_time, errD, errG, errG2, eps, order))
+            print("----------------finish epoch: %d --------------------" % (epoch + 1))
+        print('----------------------generate sample----------------------')
+        self.generate_sample(config, counter, eps_global)
         return self.dp_eps_list[-1], self.dp_delta
 
     def discriminator(self, image, y):
@@ -1660,56 +1341,39 @@ class DCGAN(object):
             return self.simple_discriminator(image, y)
         yb = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
         x = conv_cond_concat(image, yb)
-
         h0 = lrelu(conv2d(x, self.c_dim + self.y_dim, name='d_h0_conv'))
         h0 = conv_cond_concat(h0, yb)
-
         if self.wgan:
             h1 = lrelu(conv2d(h0, self.df_dim + self.y_dim, name='d_h1_conv'))
         else:
             h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim + self.y_dim, name='d_h1_conv')))
-
         h1 = tf.reshape(h1, [self.batch_size, -1])
         h1 = concat([h1, y], 1)
-
         if self.wgan:
             h2 = lrelu(linear(h1, self.dfc_dim, 'd_h2_lin'))
         else:
             h2 = lrelu(self.d_bn2(linear(h1, self.dfc_dim, 'd_h2_lin')))
         h2 = concat([h2, y], 1)
-
         h3 = linear(h2, 1, 'd_h3_lin')
-
         return tf.nn.sigmoid(h3), h3
 
     def simple_discriminator(self, image, y):
-        # yb = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
         image = tf.reshape(image, (-1, 20))
         x = concat([image, y], 1)
-
         h0 = tf.nn.relu(linear(x, 100, 'd_h0_lin'))
         h0 = concat([h0, y], 1)
-
         h1 = tf.nn.relu(linear(h0, 50, 'd_h1_lin'))
         h1 = concat([h1, y], 1)
-
         h2 = linear(h1, 1, 'd_h2_lin')
-
         return tf.nn.sigmoid(h2), h2
 
     def simple_generator(self, z, y):
         with tf.variable_scope("generator") as scope:
-            s_h, s_w = self.output_height, self.output_width
-
-            yb = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
             z = concat([z, y], 1)
-
             h0 = tf.nn.relu(linear(z, 200, 'g_h0_lin'))
             h0 = concat([h0, y], 1)
-
             h1 = tf.nn.relu(linear(h0, 50, 'g_h1_lin'))
             h1 = concat([h1, y], 1)
-
             h2 = linear(h1, 20, 'g_h2_lin')
             return tf.reshape(h2, (-1, 2, 2, 5))
 
@@ -1720,8 +1384,6 @@ class DCGAN(object):
             s_h, s_w = self.output_height, self.output_width
             s_h2, s_h4 = int(s_h / 2), max(int(s_h / 4), 1)
             s_w2, s_w4 = int(s_w / 2), max(int(s_w / 4), 1)
-
-            # yb = tf.expand_dims(tf.expand_dims(y, 1),2)
             yb = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
             z = concat([z, y], 1)
 
@@ -1736,7 +1398,6 @@ class DCGAN(object):
             else:
                 h1 = tf.nn.relu(self.g_bn1(linear(h0, self.gf_dim * 2 * s_h4 * s_w4, 'g_h1_lin')))
             h1 = tf.reshape(h1, [self.batch_size, s_h4, s_w4, self.gf_dim * 2])
-
             h1 = conv_cond_concat(h1, yb)
 
             if self.wgan:
@@ -1745,9 +1406,6 @@ class DCGAN(object):
                 h2 = tf.nn.relu(
                     self.g_bn2(deconv2d(h1, [self.batch_size, s_h2, s_w2, self.gf_dim * 2], name='g_h2')))
             h2 = conv_cond_concat(h2, yb)
-
-            # if 'ae' in self.config.dataset:
-            #     return deconv2d(h2, [self.batch_size, s_h, s_w, self.c_dim], name='g_h3')
 
             if self.config.tanh:
                 return (1 + tf.nn.tanh(deconv2d(h2, [self.batch_size, s_h, s_w, self.c_dim], name='g_h3'))) / 2.
@@ -1799,7 +1457,8 @@ class DCGAN(object):
         # List ALL tensors example output: v0/Adam (DT_FLOAT) [3,3,1,80]
         print_tensors_in_checkpoint_file(file_name=checkpoint_path, tensor_name='', all_tensors=True)
 
-    def load_pretrain(self, checkpoint_dir):
+    def load_pretrain(self):
+        checkpoint_dir = os.path.join(self.checkpoint_dir, self.model_dir)
         print(" [*] Reading checkpoints...")
         print(checkpoint_dir)
         save_vars_dict = {x.name[:-2]: x for x in self.save_vars if x.name.startswith('generator')}
@@ -1811,6 +1470,7 @@ class DCGAN(object):
             ckpt_name = 'CIFAR.model-250'
         elif 'celebA' in self.dataset_name:
             ckpt_name = 'CIFAR.model-99'
+        ckpt_name = "CIFAR.model-20"
         pretrain_saver.restore(self.sess, os.path.join(checkpoint_dir, ckpt_name))
         import re
         if self.config.load_d:
@@ -1819,19 +1479,10 @@ class DCGAN(object):
                 save_vars_dict = {re.sub(r'teacher[0-9]+', 'teacher0', x.name[:-2]): x for x in self.save_vars if
                                   x.name.startswith('teacher{}/'.format(i))}
                 pretrain_saver = tf.train.Saver(max_to_keep=5, var_list=save_vars_dict)
-                pretrain_saver.restore(self.sess, os.path.join(checkpoint_dir, ckpt_name))
+                pretrain_saver.restore(self.sess, os.path.join(self.teacher_dir, self.model_dir, "DCGAN_batch_0_epoch-9"))
 
-        # save_vars_dict = {x.name: x for x in self.save_vars}
-        # print(save_vars_dict.keys())
         counter = int(next(re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
         print(" [*] Success to read {}".format(ckpt_name))
-        # current_scope = tf.contrib.framework.get_name_scope()
-        # with tf.variable_scope(current_scope, reuse=True):
-        #     biases = tf.get_variable("teacher0/d_h0_conv/biases")
-        #     biases2 = tf.get_variable("teacher12/d_h0_conv/biases")
-        #     biases3 = tf.get_variable("generator/g_h0_lin/Matrix")
-        #     biases = tf.Print(biases, [biases, biases2, biases3])
-        #     self.sess.run(biases)
         return True, counter
 
     def load(self, checkpoint_dir, ckpt_name):
@@ -1844,25 +1495,6 @@ class DCGAN(object):
         print(" [*] Success to read {}".format(ckpt_name))
         return True, counter
 
-    # def load(self, checkpoint_dir):
-    #     import re
-    #     print(" [*] Reading checkpoints...")
-    #     checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir)
-    #     print(checkpoint_dir)
-    #     ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
-    #     print(ckpt)
-    #     print(ckpt.model_checkpoint_path)
-    #     if ckpt and ckpt.model_checkpoint_path:
-    #         ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
-    #         print(ckpt_name)
-    #         self.saver.restore(self.sess, os.path.join(checkpoint_dir, ckpt_name))
-    #         counter = int(next(re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
-    #         print(" [*] Success to read {}".format(ckpt_name))
-    #         return True, counter
-    #     else:
-    #         print(" [*] Failed to find a checkpoint")
-    #         return False, 0
-
     def load_d(self, checkpoint_dir, batch_num, epoch):
         import re
         print(" [*] Reading checkpoints...")
@@ -1870,49 +1502,316 @@ class DCGAN(object):
         model_name = "DCGAN_batch_" + str(batch_num) + "_epoch-" + str(epoch)
 
         ckpt = os.path.join(checkpoint_dir, model_name)
-        print(ckpt + ".meta")
+        print(f"Reading checkpoint: {ckpt}.meta")
         if os.path.isfile(ckpt + ".meta"):
-            # model_name = "DCGAN_batch_" + str(batch_num) + "_epoch_" + str(epoch)
-            # print(model_name)
             self.saver_d.restore(self.sess, ckpt)
             counter = int(next(re.finditer("(\d+)(?!.*\d)", model_name)).group(0))
             print(" [*] Success to read {}".format(model_name))
             return True, counter
-
         else:
             print(" [*] Failed to find a checkpoint")
             return False, 0
 
-    def save(self, checkpoint_dir, step):
+    def save(self, step):
         model_name = "CIFAR.model"
-        checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir)
-
+        checkpoint_dir = os.path.join(self.config.checkpoint_dir, self.model_dir)
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
-
-        self.saver.save(self.sess,
-                        os.path.join(checkpoint_dir, model_name),
-                        global_step=step)
+        self.saver.save(self.sess, os.path.join(checkpoint_dir, model_name), global_step=step)
 
     def save_d(self, checkpoint_dir, step, teacher_batch):
+        print("-------------start-save-dis----------------------")
         model_name = "DCGAN_batch_" + str(teacher_batch) + "_epoch"
         checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir)
 
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
 
-        self.saver_d.save(self.sess,
-                          os.path.join(checkpoint_dir, model_name),
-                          global_step=step)
-        print("-------------save-dis----------------------")
+        self.saver_d.save(self.sess, os.path.join(checkpoint_dir, model_name), global_step=step)
+        print(f"Model name: {model_name}-{step}, teacher_batch: {teacher_batch} saved successfully")
+        print("-------------finish-save-dis----------------------")
 
     def save_g(self, checkpoint_dir, step):
+        print("-------------start-save-gen----------------------")
         model_name = "DCGAN.model"
         checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir)
 
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
 
-        self.saver_g.save(self.sess,
-                          os.path.join(checkpoint_dir, model_name),
-                          global_step=step)
+        self.saver_g.save(self.sess, os.path.join(checkpoint_dir, model_name), global_step=step)
+        print("-------------finish-save-gen----------------------")
+
+    def train_generator(self, config, epoch, batch_z, g_optim, counter):
+        for k in range(config.g_step):
+            img_grads_list = []
+            if self.y is not None:
+                batch_labels = self.get_random_labels(self.batch_size)
+                for batch_num in range(self.teachers_batch):
+                    if self.teachers_batch > 1:
+                        could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch,
+                                                                     batch_num=batch_num)
+                        if could_load:
+                            counter = checkpoint_counter
+                            print("load success")
+                        else:
+                            print('fail')
+                    for teacher_id in range(self.batch_teachers):
+                        img_grads = self.sess.run(self.teachers_list[teacher_id]['img_grads'],
+                                                  feed_dict={
+                                                      self.z: batch_z,
+                                                      self.y: batch_labels,
+                                                  })
+                        img_grads_list.append(img_grads)
+                old_img = self.sess.run(self.G, feed_dict={self.z: batch_z, self.y: batch_labels})
+            else:
+                for batch_num in range(self.teachers_batch):
+                    if self.teachers_batch > 1:
+                        could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch,
+                                                                     batch_num=batch_num)
+                        if could_load:
+                            counter = checkpoint_counter
+                            print("load sucess")
+                        else:
+                            print('fail')
+                    for teacher_id in range(self.batch_teachers):
+                        img_grads = self.sess.run(self.teachers_list[teacher_id]['img_grads'],
+                                                  feed_dict={
+                                                      self.z: batch_z,
+                                                  })
+                        img_grads_list.append(img_grads)
+                old_img = self.sess.run(self.G, feed_dict={self.z: batch_z})
+
+            img_grads_agg_list = []
+            for j in range(self.batch_size):
+                thresh = self.thresh
+                if config.non_private:
+                    img_grads_agg_tmp = self.non_private_aggregation([grads[j] for grads in img_grads_list], config)
+                    rdp_budget = 0
+                elif config.increasing_dim:
+                    img_grads_agg_tmp, rdp_budget = self.aggregate_results(
+                        [grads[j] for grads in img_grads_list], config, thresh=thresh, epoch=epoch)
+                elif config.signsgd_dept:
+                    img_grads_agg_tmp, rdp_budget, rdp_budget_dept = self.aggregate_results(
+                        [grads[j] for grads in img_grads_list], config, thresh=thresh)
+                    self.rdp_counter_dept += rdp_budget_dept
+                else:
+                    img_grads_agg_tmp, rdp_budget = self.aggregate_results(
+                        [grads[j] for grads in img_grads_list], config, thresh=thresh)
+
+                img_grads_agg_list.append(img_grads_agg_tmp)
+                self.rdp_counter += rdp_budget
+
+            img_grads_agg = np.asarray(img_grads_agg_list)
+            updated_img = old_img + img_grads_agg
+
+            if config.non_private:
+                eps = 0
+                order = 0
+            else:
+                # calculate privacy budget and break if exceeds threshold
+                eps, order = compute_eps_from_delta(self.orders, self.rdp_counter, self.dp_delta)
+                if config.signsgd_dept:
+                    eps_dept, order_dept = compute_eps_from_delta(self.orders, self.rdp_counter_dept, self.dp_delta)
+                self.break_if_privacy_budget_exceeds(config, eps, counter)
+
+            self.dp_eps_list.append(eps)
+            self.rdp_order_list.append(order)
+            self.rdp_eps_list.append(self.rdp_counter)
+            if config.signsgd_dept:
+                self.dp_eps_list_dept.append(eps_dept)
+                self.rdp_order_list_dept.append(order_dept)
+                self.rdp_eps_list_dept.append(self.rdp_counter_dept)
+
+            # Update G network
+            errG, errG2 = self.update_g_network(g_optim, batch_z, updated_img, batch_labels, epoch)
+        return errG, eps, order, errG2
+
+    def train_teacher_x(self, config, epoch, batch_z, d_optim_list, teacher_id, batch_num, idx, errD):
+        data_X = self.train_data_list[teacher_id + batch_num * self.batch_teachers]
+        batch_idx = range(idx * self.batch_size, (idx + 1) * self.batch_size)
+        batch_images = data_X[batch_idx]
+
+        for k in range(config.d_step if epoch > 0 or config.pretrain_teacher == 0 else config.pretrain_teacher):
+            if self.y is not None:
+                data_y = self.train_label_list[teacher_id + batch_num * self.batch_teachers]
+                batch_labels = data_y[batch_idx]
+
+                _, summary_str = self.sess.run([d_optim_list[teacher_id], self.d_sum_list[teacher_id]],
+                                               feed_dict={
+                                                   self.inputs: batch_images,
+                                                   self.z: batch_z,
+                                                   self.y: batch_labels,
+                                               })
+                self.writer.add_summary(summary_str, epoch)
+                err = self.teachers_list[teacher_id]['d_loss'].eval({
+                    self.z: batch_z,
+                    self.inputs: batch_images,
+                    self.y: batch_labels,
+                })
+                # print(str(batch_num*self.batch_teachers + teacher_id) + "loss:"+str(err))
+                errD += err
+            else:
+                _, summary_str = self.sess.run([d_optim_list[teacher_id], self.d_sum_list[teacher_id]],
+                                               feed_dict={
+                                                   self.inputs: batch_images,
+                                                   self.z: batch_z,
+                                               })
+                self.writer.add_summary(summary_str, epoch)
+                err = self.teachers_list[teacher_id]['d_loss'].eval({
+                    self.z: batch_z,
+                    self.inputs: batch_images,
+                })
+                # print(str(batch_num * self.batch_teachers + teacher_id) + "d_loss:" + str(err))
+                errD += err
+        return errD
+
+    def load_batch(self, batch_num, epoch):
+        counter = 0
+        could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch, batch_num=batch_num)
+        if could_load:
+            counter = checkpoint_counter
+            print("successful load of epoch")
+        else:
+            print("failed load of epoch")
+            could_load, checkpoint_counter = self.load_d(self.teacher_dir, epoch=epoch - 1, batch_num=batch_num)
+            if could_load:
+                counter = checkpoint_counter
+                print("successful load of previous epoch")
+        return counter
+
+    def create_directories(self):
+        if not os.path.exists(self.checkpoint_dir):
+            os.makedirs(self.checkpoint_dir)
+
+        if not os.path.exists(self.teacher_dir):
+            os.makedirs(self.teacher_dir)
+
+    def store_configs(self):
+        with open(os.path.join(self.checkpoint_dir, 'configs.json'), 'w') as fp:
+            json.dump(self.config.flag_values_dict(), fp)
+
+    def handle_if_pca(self, config):
+        if self.pca:
+            data = self.data_X.reshape([self.data_X.shape[0], -1])
+            self.pca_components, rdp_budget = ComputeDPPrincipalProjection(
+                data,
+                self.pca_dim,
+                self.orders,
+                config.pca_sigma,
+            )
+            self.rdp_counter += rdp_budget
+
+    def initialize_d_optim_list(self, config):
+        d_optim_list = []
+        for i in range(self.batch_teachers):
+            d_optim_list.append(tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1).minimize(
+                self.teachers_list[i]['d_loss'], var_list=self.d_vars[i]))
+        return d_optim_list
+
+    def handle_if_not_pretrain(self, config):
+        if not config.pretrain:
+            try:
+                tf.global_variables_initializer().run()
+            except:
+                tf.initialize_all_variables().run()
+        else:
+            try:
+                tf.global_variables_initializer().run()
+            except:
+                tf.initialize_all_variables().run()
+            self.load_pretrain()
+
+    def initialize_g_sum(self):
+        if 'slt' in self.dataset_name:
+            self.g_sum = merge_summary([self.z_sum, self.G_sum, self.g_loss_sum])
+        else:
+            self.g_sum = merge_summary([self.z_sum, self.g_loss_sum])
+
+    def initialize_d_sum_list(self):
+        d_sum_list = []
+        for i in range(self.batch_teachers):
+            teacher = self.teachers_list[i]
+            if 'slt' in self.dataset_name:
+                d_sum_list.append(
+                    merge_summary([teacher['d_loss_sum'], teacher['g_loss_sum'], teacher['img_grads_sum']]))
+            else:
+                d_sum_list.append(merge_summary([teacher['d_loss_sum'], teacher['g_loss_sum']]))
+        return d_sum_list
+
+    def generate_sample(self, config, counter, eps):
+        self.save(counter)
+        np.savetxt(self.checkpoint_dir + "/dp_eps.txt", np.asarray(self.dp_eps_list), delimiter=",")
+        np.savetxt(self.checkpoint_dir + "/rdp_eps.txt", np.asarray(self.rdp_eps_list), delimiter=",")
+        np.savetxt(self.checkpoint_dir + "/rdp_order.txt", np.asarray(self.rdp_order_list), delimiter=",")
+        if config.signsgd_dept:
+            np.savetxt(self.checkpoint_dir + "/dept_dp_eps.txt", np.asarray(self.dp_eps_list_dept), delimiter=",")
+            np.savetxt(self.checkpoint_dir + "/dept_rdp_eps.txt", np.asarray(self.rdp_eps_list_dept), delimiter=",")
+            np.savetxt(self.checkpoint_dir + "/dept_rdp_order.txt", np.asarray(self.rdp_order_list_dept), delimiter=",")
+
+        if config.save_epoch:
+            floor_eps = math.floor(eps * 10) / 10.0
+            if not self.save_dict[floor_eps]:
+                # get a checkpoint of low eps
+                self.save_dict[floor_eps] = True
+                from shutil import copytree
+                src_dir = os.path.join(config.checkpoint_dir, self.model_dir)
+                dst_dir = os.path.join(config.checkpoint_dir, str(floor_eps))
+                copytree(src_dir, dst_dir)
+
+    def break_if_privacy_budget_exceeds(self, config, eps, counter):
+        if eps > config.max_eps:
+            print("New budget (eps = %.2f) exceeds threshold of %.2f. Early break (eps = %.2f)." % (
+                eps, config.max_eps, self.dp_eps_list[-1]))
+
+            # save privacy budget
+            self.save(counter)
+            np.savetxt(self.checkpoint_dir + "/dp_eps.txt", np.asarray(self.dp_eps_list), delimiter=",")
+            np.savetxt(self.checkpoint_dir + "/rdp_eps.txt", np.asarray(self.rdp_eps_list),
+                       delimiter=",")
+            np.savetxt(self.checkpoint_dir + "/rdp_order.txt", np.asarray(self.rdp_order_list),
+                       delimiter=",")
+            if config.signsgd_dept:
+                np.savetxt(self.checkpoint_dir + "/dept_dp_eps.txt", np.asarray(self.dp_eps_list_dept),
+                           delimiter=",")
+                np.savetxt(self.checkpoint_dir + "/dept_rdp_eps.txt", np.asarray(self.rdp_eps_list_dept),
+                           delimiter=",")
+                np.savetxt(self.checkpoint_dir + "/dept_rdp_order.txt", np.asarray(self.rdp_order_list_dept),
+                           delimiter=",")
+
+            gen_batch = 100000 // self.batch_size + 1
+            data = self.gen_data(gen_batch)
+            data = data[:100000]
+            import joblib
+            interval = 100000 // 10
+            for slice in range(10):
+                joblib.dump(data[slice * interval: (slice + 1) * interval],
+                            self.checkpoint_dir + '/eps-%.2f.data' % self.dp_eps_list[-1] + f'-{slice}.pkl')
+            sys.exit()
+
+    def update_g_network(self, g_optim, batch_z, updated_img, batch_labels, epoch):
+        if self.y is not None:
+            _, summary_str, errG2 = self.sess.run([g_optim, self.g_sum, self.g_loss],
+                                                  feed_dict={
+                                                      self.z: batch_z,
+                                                      self.updated_img: updated_img,
+                                                      self.y: batch_labels,
+                                                  })
+            self.writer.add_summary(summary_str, epoch)
+            return self.g_loss.eval({
+                self.z: batch_z,
+                self.updated_img: updated_img,
+                self.y: batch_labels,
+            }), errG2
+        else:
+            _, summary_str = self.sess.run([g_optim, self.g_sum],
+                                           feed_dict={
+                                               self.z: batch_z,
+                                               self.updated_img: updated_img,
+                                           })
+            self.writer.add_summary(summary_str, epoch)
+            return self.g_loss.eval({
+                self.z: batch_z,
+                self.updated_img: updated_img,
+            }), 0
+

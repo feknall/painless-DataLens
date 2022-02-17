@@ -97,7 +97,7 @@ def compute_logq_gaussian(counts, sigma):
   # Upper bound q via a union bound rather than a more precise calculation.
   logq = _logaddexp(
       scipy.stats.norm.logsf(counts_rest, scale=math.sqrt(2 * variance)))
-  print("log q:", logq)
+  # print("log q:", logq)
   # A sketch of a more accurate estimate, which is currently disabled for two
   # reasons:
   # 1. Numerical instability;
@@ -175,7 +175,7 @@ def rdp_gaussian(logq, sigma, orders):
 
   # Filter out entries where data-dependent bound does not apply.
   mask = np.logical_and(mu_hi1 > orders_vec, mu_hi2 > 1)
-  print('mask len: ', np.sum(mask))
+  # print('mask len: ', np.sum(mask))
 
   rdp_hi1 = mu_hi1 / variance
   rdp_hi2 = mu_hi2 / variance
@@ -197,7 +197,8 @@ def rdp_gaussian(logq, sigma, orders):
     print('choose data dependent bound: ', np.sum((ret > log_s / (orders - 1))[mask]))
     ret[mask] = np.minimum(ret, log_s / (orders - 1))[mask]
   else:
-    print("Condition not satisfied:")
+    pass
+    # print("Condition not satisfied:")
     # print("np.any(mask): ", np.any(mask))
     # print("logq <= log_a2 - mu_hi2 * (math.log(1 + 1 / (mu_hi1 - 1)) + math.log(1 + 1 / (mu_hi2 - 1))):", logq <= log_a2 - mu_hi2 * (math.log(1 + 1 / (mu_hi1 - 1)) + math.log(1 + 1 / (mu_hi2 - 1))))
     # print("-logq > rdp_hi2:", -logq > rdp_hi2)
@@ -247,7 +248,7 @@ def double_rdp_gaussian(logq, sigma, orders):
 
   # Filter out entries where data-dependent bound does not apply.
   mask = np.logical_and(mu_hi1 > orders_vec, mu_hi2 > 1)
-  print('mask len: ', np.sum(mask))
+  # print('mask len: ', np.sum(mask))
 
   rdp_hi1 = mu_hi1 / variance
   rdp_hi2 = mu_hi2 / variance

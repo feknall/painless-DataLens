@@ -370,16 +370,16 @@ def stachastic_convert2topk_gpu(grad, topk, b=None):
     votes.scatter_(1, topk_ind, 1)
     votes = sign_grad * votes
 
-    sign_sgd = torch.sign(grad)
+    # sign_sgd = torch.sign(grad)
     biased_votes = torch.zeros_like(grad).cuda()
     biased_votes.scatter_(1, topk_ind, 1)
-    biased_votes = sign_sgd * biased_votes
-    print("prob topk", prob[0][topk_ind[0]])
-    print("grad topk", grad[0][topk_ind[0]])
-    print("sto sign topk", votes[0][topk_ind[0]])
-    print("biased sign topk", biased_votes[0][topk_ind[0]])
-    print("not agreed all sign:", torch.sum(votes != biased_votes))
-    print("not agreed one sign:", torch.sum(votes[0][topk_ind[0]] != biased_votes[0][topk_ind[0]]))
+    # biased_votes = sign_sgd * biased_votes
+    # print("prob topk", prob[0][topk_ind[0]])
+    # print("grad topk", grad[0][topk_ind[0]])
+    # print("sto sign topk", votes[0][topk_ind[0]])
+    # print("biased sign topk", biased_votes[0][topk_ind[0]])
+    # print("not agreed all sign:", torch.sum(votes != biased_votes))
+    # print("not agreed one sign:", torch.sum(votes[0][topk_ind[0]] != biased_votes[0][topk_ind[0]]))
     return votes
 
 
@@ -436,7 +436,7 @@ def signsgd_aggregate(output_list, sigma, orders, topk, beta=0.1, alpha=1e-3, st
 
     sign_grad[voted_arr > beta * nteacher] = 1
     sign_grad[voted_arr < -beta * nteacher] = -1
-    print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
+    # print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
 
     return alpha * sign_grad.reshape(output_list[0].shape), rdp_budget
 
@@ -495,7 +495,7 @@ def sketchtopk_aggregate(output_list, sigma, orders, topk, beta=0.1, alpha=1e-3,
 
     sign_grad[voted_arr > beta * nteacher] = 1
     sign_grad[voted_arr < -beta * nteacher] = -1
-    print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
+    # print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
 
     return alpha * sign_grad.reshape(output_list[0].shape), rdp_budget
 
@@ -524,7 +524,7 @@ def k_level_sgd_aggregate(output_list, sigma, orders, k_level, beta=0.1, alpha=1
 
     sign_grad[voted_arr > beta * nteacher] = 1
     sign_grad[voted_arr < -beta * nteacher] = -1
-    print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
+    # print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
 
     return alpha * sign_grad.reshape(output_list[0].shape), rdp_budget
 
@@ -560,7 +560,7 @@ def signsgd_aggregate_dept(output_list, sigma, orders, topk, beta=0.1, alpha=1e-
 
     sign_grad[voted_arr > beta * nteacher] = 1
     sign_grad[voted_arr < -beta * nteacher] = -1
-    print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
+    # print("Agreed Dimension: " + str(np.sum(abs(sign_grad))))
 
     return alpha * sign_grad.reshape(output_list[0].shape), rdp_budget, dept_rdp_budget
 

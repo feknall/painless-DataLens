@@ -12,6 +12,7 @@ import sys
 import pickle
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+tf.get_logger().setLevel('ERROR')
 
 flags = tf.app.flags
 flags.DEFINE_integer("epoch", 1000, "Epoch for training teacher models")
@@ -68,7 +69,7 @@ flags.DEFINE_integer("g_step", 1, "steps of the generator")
 flags.DEFINE_integer("d_step", 1, "steps of the discriminator")
 flags.DEFINE_integer("pca_dim", 10, "principal dimensions for pca")
 flags.DEFINE_float("thresh", 0.5, "threshhold for threshgmax")
-flags.DEFINE_float("max_eps", 1, "maximum epsilon")
+flags.DEFINE_float("max_eps", 0.1, "maximum epsilon")
 flags.DEFINE_float("max_grad", 0, "maximum gradient for signsgd aggregation")
 flags.DEFINE_boolean("random_label", False, "random labels for training data, only used when pretraining some models")
 flags.DEFINE_boolean("shuffle", True, "Evenly distribute dataset")
